@@ -1,0 +1,127 @@
+import express from "express";
+import cors from "cors";
+import fetch from "node-fetch";
+
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+app.post("/grade", async (req, res) => {
+  try {
+    const {
+  question,
+  answer,
+  key,
+  instruction,
+  point,
+  knowledge_base,
+  criteria,
+  max_score
+} = req.body;
+
+const finalKey = key || knowledge_base || "";
+const finalInstruction = instruction || criteria || "Nilai berdasarkan kesesuaian konsep dengan kunci jawaban.";
+const finalPoint = point || max_score || 100;
+
+    const prompt = `
+Anda adalah instruktur profesional yang menilai jawaban peserta training.
+
+Tugas Anda:
+Menilai jawaban peserta berdasarkan soal, kunci jawaban, dan instruksi penilaian.
+
+=== SOAL ===
+${question}
+
+=== KUNCI JAWABAN / PEMBAHASAN ===
+${finalKey}
+
+=== JAWABAN PESERTA ===
+${answer}
+
+=== INSTRUKSI PENILAIAN AI ===
+${finalInstruction}
+
+=== POIN MAKSIMAL SOAL ===
+${finalPoint}
+
+=== ATURAN PENILAIAN ===
+1. Nilai berdasarkan kesesuaian konsep, bukan panjang jawaban.
+2. Jika jawaban benar sebagian, beri nilai proporsional.
+3. Jangan terlalu kaku terhadap perbedaan kalimat.
+4. Fokus pada ketepatan istilah teknis.
+5. Berikan pembahasan yang singkat, jelas, dan edukatif.
+6. Output harus JSON valid.
+
+Format jawaban wajib seperti ini:
+{
+  "score": 0,
+  "feedback": "Tuliskan pembahasan penilaian di sini",
+  "strengths": "Kelebihan jawaban peserta",
+  "weaknesses": "Kekurangan jawaban peserta",
+  "suggestions": "Saran perbaikan jawaban"
+}
+
+Jangan menulis apa pun di luar JSON.
+`;
+
+    const response = await fetch("http://localhost:11434/api/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "qwen2.5:7b",
+        prompt,
+        stream: false,
+        options: {
+          temperature: 0.2,
+          top_p: 0.9
+        }
+      })
+    });
+
+    const data = await response.json();
+
+    let resultText = data.response || "";
+
+    resultText = resultText
+      .replace(/```json/g, "")
+      .replace(/```/g, "")
+      .trim();
+
+    let parsed;
+
+    try {
+      parsed = JSON.parse(resultText);
+    } catch (err) {
+      parsed = {
+        score: 0,
+        feedback: resultText,
+        strengths: "",
+        weaknesses: "AI berhasil membaca jawaban, tetapi format respons tidak sempurna.",
+        suggestions: "Coba perjelas kunci jawaban atau instruksi penilaian."
+      };
+    }
+
+    res.json(parsed);
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      score: 0,
+      feedback: "Gagal menilai dengan AI.",
+      strengths: "",
+      weaknesses: "Backend AI mengalami error.",
+      suggestions: "Pastikan Ollama sedang berjalan dan model sudah terinstall."
+    });
+  }
+});
+
+app.get("/", (req, res) => {
+  res.send("AI Grading Backend is running");
+});
+
+app.listen(3001, () => {
+  console.log("AI Grading Backend jalan di http://localhost:3001");
+});
