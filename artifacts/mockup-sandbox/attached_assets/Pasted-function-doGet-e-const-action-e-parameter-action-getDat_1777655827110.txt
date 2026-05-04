@@ -1,0 +1,194 @@
+function doGet(e) {
+  const action = (e.parameter.action || "getData");
+  if (action === "getData") return getMainData();
+  if (action === "getScores") return getScoresData(e.parameter.testName || "");
+  if (action === "getAllScores") return getScoresData("");
+  if (action === "getQuestions") return getQuestionsData(e.parameter.testName || "");
+  if (action === "getAICriteria") return getAICriteriaData(e.parameter.testName || "");
+  return jsonOut({ error: "Unknown action" });
+}
+
+function doPost(e) {
+  try {
+    const data = JSON.parse(e.postData.contents);
+    if (data.action === "saveScore") return saveScoreToSheet(data);
+    if (data.action === "saveQuestion") return saveQuestionsToSheet(data);
+    if (data.action === "saveAICriteria") return saveAICriteriaToSheet(data);
+    return jsonOut({ error: "Unknown action" });
+  } catch (err) {
+    return jsonOut({ error: err.toString() });
+  }
+}
+
+function jsonOut(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function getMainData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const usersSheet = ss.getSheetByName("USERS");
+  const programSheet = ss.getSheetByName("PROGRAM_STRUCTURE");
+  const usersData = usersSheet ? usersSheet.getDataRange().getValues() : [];
+  const programData = programSheet ? programSheet.getDataRange().getValues() : [];
+  const users = [];
+  for (let i = 1; i < usersData.length; i++) {
+    const row = usersData[i];
+    if (!row[0]) continue;
+    users.push({
+      username: String(row[0] || "").trim(),
+      access_code: String(row[1] || "").trim(),
+      program: String(row[2] || "").trim(),
+      role: String(row[3] || "participant").trim().toLowerCase()
+    });
+  }
+  return jsonOut({
+    users: users,
+    program_structure: programData.slice(1).filter(r => r[0]).map(r => ({
+      program: String(r[0] || "").trim(),
+      progress: String(r[1] || "").trim(),
+      test_group: String(r[2] || "").trim(),
+      order: Number(r[3]) || 0,
+      test_name: String(r[4] || "").trim(),
+      form_link: String(r[5] || "").trim()
+    }))
+  });
+}
+
+function saveScoreToSheet(data) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName("SCORES");
+  if (!sheet) {
+    sheet = ss.insertSheet("SCORES");
+    sheet.appendRow(["username", "test_name", "score", "answers", "feedback", "submitted_at"]);
+  }
+  const all = sheet.getDataRange().getValues();
+  for (let i = 1; i < all.length; i++) {
+    if (String(all[i][0]) === String(data.username) && String(all[i][1]) === String(data.test_name)) {
+      if (Number(data.score) > Number(all[i][2])) {
+        sheet.getRange(i + 1, 1, 1, 6).setValues([[
+          data.username, data.test_name, data.score,
+          JSON.stringify(data.answers || {}),
+          JSON.stringify(data.feedback || {}),
+          data.submitted_at
+        ]]);
+      }
+      return jsonOut({ success: true });
+    }
+  }
+  sheet.appendRow([
+    data.username, data.test_name, data.score,
+    JSON.stringify(data.answers || {}),
+    JSON.stringify(data.feedback || {}),
+    data.submitted_at
+  ]);
+  return jsonOut({ success: true });
+}
+
+function getScoresData(testName) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("SCORES");
+  if (!sheet) return jsonOut([]);
+  const all = sheet.getDataRange().getValues();
+  const scores = [];
+  for (let i = 1; i < all.length; i++) {
+    const row = all[i];
+    if (!row[0]) continue;
+    if (testName && String(row[1]) !== testName) continue;
+    let answers = {}, feedback = {};
+    try { answers = JSON.parse(row[3] || "{}"); } catch (e) {}
+    try { feedback = JSON.parse(row[4] || "{}"); } catch (e) {}
+    scores.push({
+      username: String(row[0]),
+      test_name: String(row[1]),
+      score: Number(row[2]),
+      answers: answers,
+      feedback: feedback,
+      submitted_at: String(row[5])
+    });
+  }
+  return jsonOut(scores);
+}
+
+function getQuestionsData(testName) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("QUESTIONS");
+  if (!sheet) return jsonOut([]);
+  const all = sheet.getDataRange().getValues();
+  const out = [];
+  for (let i = 1; i < all.length; i++) {
+    const r = all[i];
+    if (!r[0]) continue;
+    if (testName && String(r[0]) !== testName) continue;
+    let options = [];
+    try { options = JSON.parse(r[4] || "[]"); } catch (e) {}
+    out.push({
+      test_name: String(r[0]),
+      question_index: Number(r[1]) || 0,
+      type: String(r[2] || "essay"),
+      question_text: String(r[3] || ""),
+      options: options,
+      correct_answer: String(r[5] || ""),
+      passing_score: Number(r[6]) || 75,
+      ai_enabled: String(r[7]).toLowerCase() === "true",
+      media_url: String(r[8] || "")
+    });
+  }
+  out.sort(function(a, b) { return a.question_index - b.question_index; });
+  return jsonOut(out);
+}
+
+function saveQuestionsToSheet(data) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName("QUESTIONS");
+  if (!sheet) {
+    sheet = ss.insertSheet("QUESTIONS");
+    sheet.appendRow(["test_name","question_index","type","question_text","options","correct_answer","passing_score","ai_enabled","media_url"]);
+  }
+  const all = sheet.getDataRange().getValues();
+  for (let i = all.length - 1; i >= 1; i--) {
+    if (String(all[i][0]) === String(data.test_name)) sheet.deleteRow(i + 1);
+  }
+  (data.questions || []).forEach(function(q, idx) {
+    sheet.appendRow([
+      data.test_name, idx, q.type || "essay", q.question_text || "",
+      JSON.stringify(q.options || []), q.correct_answer || "",
+      Number(q.passing_score) || 75, q.ai_enabled ? "true" : "false", q.media_url || ""
+    ]);
+  });
+  return jsonOut({ success: true });
+}
+
+function getAICriteriaData(testName) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("AI_CRITERIA");
+  if (!sheet) return jsonOut({ ai_enabled: false, criteria: "" });
+  const all = sheet.getDataRange().getValues();
+  for (let i = 1; i < all.length; i++) {
+    if (String(all[i][0]) === testName) {
+      return jsonOut({
+        ai_enabled: String(all[i][1]).toLowerCase() === "true",
+        criteria: String(all[i][2] || "")
+      });
+    }
+  }
+  return jsonOut({ ai_enabled: false, criteria: "" });
+}
+
+function saveAICriteriaToSheet(data) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName("AI_CRITERIA");
+  if (!sheet) {
+    sheet = ss.insertSheet("AI_CRITERIA");
+    sheet.appendRow(["test_name","ai_enabled","criteria"]);
+  }
+  const all = sheet.getDataRange().getValues();
+  for (let i = 1; i < all.length; i++) {
+    if (String(all[i][0]) === data.test_name) {
+      sheet.getRange(i+1, 1, 1, 3).setValues([[data.test_name, data.ai_enabled ? "true":"false", data.criteria || ""]]);
+      return jsonOut({ success: true });
+    }
+  }
+  sheet.appendRow([data.test_name, data.ai_enabled ? "true" : "false", data.criteria || ""]);
+  return jsonOut({ success: true });
+}
